@@ -18,6 +18,9 @@
 2. 启动安装包并安装
 3. 启动WT Translator
 
+## 构建
+使用`Pyinstaller`将`main.py`和`guardian.py`打包即可
+
 ## 隐私政策
 WT Translator会上报使用数据，包括(设备ID)，不包含聊天内容、账号信息、 设备硬件信息或可定位到个人的资料。
 
