@@ -14,7 +14,7 @@
   - 随雷自启
 
 ## 安装
-1. 前往[官网](https://wt.ngup.eu.org/)或[Release])下载最新版安装包
+1. 前往[官网](https://wt.ngup.eu.org/)或[Release](https://github.com/laowangowo/WTTranslator/releases)下载最新版安装包
 2. 启动安装包并安装
 3. 启动WT Translator
 
