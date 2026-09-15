@@ -1655,6 +1655,15 @@ class OverlayWindow:
             "1.0", "\n".join(str(item) for item in list(quick_items)[:9])
         )
         self._settings_quick_replies.pack(fill="x", padx=18)
+        phrase_row = tk.Frame(body, bg=BG)
+        phrase_row.pack(fill="x", padx=18, pady=(8, 0))
+        tk.Label(
+            phrase_row, text="自定义常用短语（固定短语，存 phrases.json）",
+            bg=BG, fg=DIM, font=self._font(10), anchor="w",
+        ).pack(side="left")
+        self._styled_button(phrase_row, "管理…", self._open_phrase_manager).pack(
+            side="right"
+        )
         add_row("文字颜色", lambda row: _color_choice(row, var_quick_fg))
         add_row("背景颜色", lambda row: _color_choice(row, var_quick_bg))
         add_row("透明度", lambda row: tk.Scale(
@@ -2293,6 +2302,236 @@ class OverlayWindow:
     def _reply_failed(self, error):
         self._set_reply_busy(False)
         self.update_status(f"生成回复失败：{error}")
+
+    # ---------- 自定义常用短语管理 ----------
+    def _phrase_lang_choices(self):
+        """语言下拉选项：[(显示名, 语言代码)]，空代码表示自动判断/未指定。"""
+        choices = [("自动判断", "")]
+        try:
+            from wt_translator.translator import ZH_NAMES
+        except Exception:
+            ZH_NAMES = {}
+        for code, name in ZH_NAMES.items():
+            choices.append((f"{name} ({code})", code))
+        return choices
+
+    def _lang_display(self, code):
+        code = str(code or "")
+        if not code:
+            return "自动判断"
+        try:
+            from wt_translator.translator import ZH_NAMES
+            name = ZH_NAMES.get(code)
+            if name:
+                return f"{name} ({code})"
+        except Exception:
+            pass
+        return code
+
+    def _open_phrase_manager(self):
+        """打开自定义常用短语管理对话框（列表 + 新增/编辑/删除）。"""
+        self._touch()
+        existing = getattr(self, "_phrase_manager", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists() and existing.winfo_viewable():
+                    existing.lift()
+                    existing.attributes("-topmost", True)
+                    existing.focus_force()
+                    return
+            except tk.TclError:
+                pass
+            try:
+                existing.destroy()
+            except tk.TclError:
+                pass
+            self._phrase_manager = None
+        top, body = self._make_dialog("自定义常用短语", 520, 440)
+        self._phrase_manager = top
+
+        tk.Label(
+            body, text="固定常用短语，可自由增删改；后续可选择目标语言发送（当前仅管理）。数据保存在 phrases.json。",
+            bg=BG, fg=DIM, font=self._font(10), justify="left", wraplength=470, anchor="w",
+        ).pack(fill="x", padx=16, pady=(12, 4))
+
+        list_frame = tk.Frame(body, bg=BG)
+        list_frame.pack(fill="both", expand=True, padx=16, pady=6)
+        scrollbar = tk.Scrollbar(list_frame, orient="vertical")
+        listbox = tk.Listbox(
+            list_frame, bg="#121217", fg=FG, font=self._font(10), bd=0,
+            highlightthickness=1, highlightbackground="#33333d",
+            selectmode="single", activestyle="none", yscrollcommand=scrollbar.set,
+        )
+        scrollbar.config(command=listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        listbox.pack(side="left", fill="both", expand=True)
+        listbox.bind("<Double-Button-1>", lambda _e: self._phrase_edit_selected())
+        self._phrase_listbox = listbox
+        self._phrase_items = []
+
+        bar = tk.Frame(body, bg=BG)
+        bar.pack(side="bottom", fill="x", pady=(8, 12), padx=16)
+        self._styled_button(bar, "关闭", top.destroy).pack(side="right")
+        self._styled_button(bar, "删除", self._phrase_delete_selected).pack(
+            side="right", padx=(0, 8)
+        )
+        self._styled_button(bar, "编辑", self._phrase_edit_selected).pack(
+            side="right", padx=(0, 8)
+        )
+        self._styled_button(
+            bar, "新增", lambda: self._phrase_edit_dialog(None), primary=True
+        ).pack(side="right", padx=(0, 8))
+
+        self._refresh_phrase_list()
+
+    def _refresh_phrase_list(self):
+        from wt_translator.phrases import list_phrases
+
+        listbox = getattr(self, "_phrase_listbox", None)
+        if listbox is None:
+            return
+        try:
+            if not listbox.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        items = list_phrases()
+        listbox.delete(0, "end")
+        for p in items:
+            text = str(p.get("text", "")).replace("\n", " ")
+            if len(text) > 28:
+                text = text[:28] + "…"
+            listbox.insert("end", f"{text}　[{self._lang_display(p.get('lang', ''))}]")
+        self._phrase_items = items
+
+    def _phrase_selected(self):
+        listbox = getattr(self, "_phrase_listbox", None)
+        if listbox is None:
+            return None
+        try:
+            sel = listbox.curselection()
+        except tk.TclError:
+            return None
+        items = getattr(self, "_phrase_items", [])
+        if not sel:
+            return None
+        idx = int(sel[0])
+        if idx < 0 or idx >= len(items):
+            return None
+        return items[idx]
+
+    def _phrase_edit_selected(self):
+        phrase = self._phrase_selected()
+        if phrase is None:
+            self.update_status("请先选择一条短语")
+            return
+        self._phrase_edit_dialog(phrase)
+
+    def _phrase_delete_selected(self):
+        phrase = self._phrase_selected()
+        if phrase is None:
+            self.update_status("请先选择一条短语")
+            return
+        target = phrase
+
+        def do_delete():
+            try:
+                from wt_translator.phrases import delete_phrase
+
+                delete_phrase(target["id"])
+            except Exception as exc:
+                self.update_status(f"删除失败：{exc}")
+            else:
+                self._refresh_phrase_list()
+                self.update_status("短语已删除")
+
+        self._show_confirm_dialog(
+            "删除短语",
+            f"确定删除这条短语吗？\n“{str(target.get('text', '')).strip()}”",
+            do_delete,
+        )
+
+    def _phrase_edit_dialog(self, phrase):
+        editing = phrase is not None
+        top, body = self._make_dialog("编辑短语" if editing else "新增短语", 500, 300)
+        self._touch()
+
+        tk.Label(
+            body, text="短语内容", bg=BG, fg=DIM, font=self._font(10), anchor="w",
+        ).pack(fill="x", padx=18, pady=(16, 4))
+        entry = tk.Entry(
+            body, bg="#121217", fg=FG, font=self._font(10), insertbackground=FG,
+            relief="flat", highlightthickness=1, highlightbackground="#33333d",
+        )
+        entry.pack(fill="x", padx=18)
+        if editing:
+            entry.insert(0, str(phrase.get("text", "")))
+        entry.focus_set()
+
+        tk.Label(
+            body, text="默认语言（后续发送时使用，可随时改）", bg=BG, fg=DIM,
+            font=self._font(10), anchor="w",
+        ).pack(fill="x", padx=18, pady=(12, 4))
+        lang_row = tk.Frame(body, bg=BG)
+        lang_row.pack(fill="x", padx=18)
+        try:
+            from tkinter import ttk
+        except ImportError:
+            ttk = None
+        choices = self._phrase_lang_choices()
+        labels = [label for label, _code in choices]
+        code_by_label = {label: code for label, code in choices}
+        current_label = (
+            self._lang_display(phrase.get("lang", "")) if editing else "自动判断"
+        )
+        if current_label not in code_by_label:
+            current_label = "自动判断"
+        if ttk is not None:
+            var_lang = tk.StringVar(value=current_label)
+            combo = ttk.Combobox(
+                lang_row, textvariable=var_lang, values=labels, state="readonly",
+                font=self._font(10),
+            )
+            combo.pack(fill="x")
+        else:
+            var_lang = tk.StringVar(value=current_label)
+            menu = tk.OptionMenu(lang_row, var_lang, *labels)
+            menu.configure(
+                bg=HEADER_BG, fg=FG, activebackground="#33333d",
+                activeforeground="#ffffff", relief="flat", bd=0,
+                font=self._font(10),
+            )
+            menu.pack(fill="x")
+
+        def on_ok():
+            text = entry.get().strip()
+            if not text:
+                self.update_status("短语内容不能为空")
+                return
+            code = code_by_label.get(var_lang.get(), "")
+            try:
+                from wt_translator.phrases import add_phrase, update_phrase
+
+                if editing:
+                    update_phrase(phrase["id"], text=text, lang=code)
+                else:
+                    add_phrase(text, lang=code)
+            except Exception as exc:
+                self.update_status(f"保存失败：{exc}")
+                return
+            try:
+                top.destroy()
+            except tk.TclError:
+                pass
+            self._refresh_phrase_list()
+            self.update_status("短语已保存")
+
+        bar = tk.Frame(body, bg=BG)
+        bar.pack(side="bottom", fill="x", pady=(0, 12), padx=16)
+        self._styled_button(bar, "取消", top.destroy).pack(side="right")
+        self._styled_button(bar, "保存", on_ok, primary=True).pack(
+            side="right", padx=(0, 8)
+        )
 
     # ---------- 快捷回复菜单 ----------
     def _quick_replies(self):
