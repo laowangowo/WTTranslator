@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+import tarfile
 
 from .config import PROJECT_ROOT
 from .glossary import read as read_glossary
@@ -410,7 +411,8 @@ class HYMTTranslator:
 class LlamaTranslator:
     """基于 llama.cpp 官方 llama-server 的本地翻译后端。
 
-    自动下载：llama.cpp Windows 预编译包 + 腾讯官方 GGUF 量化模型，
+    自动下载：llama.cpp 官方预编译运行时（Windows .zip / macOS .tar.gz）
+    + 腾讯官方 GGUF 量化模型，
     通过本地 HTTP 接口（/completion）推理，CPU 上比 transformers 快很多。
     """
 
@@ -463,14 +465,17 @@ class LlamaTranslator:
         return "llama-server.exe" if os.name == "nt" else "llama-server"
 
     @staticmethod
-    def _runtime_zip_name(release):
-        """返回当前平台对应的 llama.cpp 预编译包名（不支持的平台返回 None）。"""
+    def _runtime_archive_name(release):
+        """返回当前平台对应的 llama.cpp 预编译归档名（不支持的平台返回 None）。
+
+        Windows 是 .zip，macOS 是 .tar.gz（官方不再为 macOS 发布 zip 包）。
+        """
         if os.name == "nt":
             return f"llama-{release}-bin-win-cpu-x64.zip"
         if sys.platform == "darwin":
             machine = _platform.machine().lower()
             arch = "arm64" if machine in ("arm64", "aarch64") else "x64"
-            return f"llama-{release}-bin-macos-{arch}.zip"
+            return f"llama-{release}-bin-macos-{arch}.tar.gz"
         return None
 
     def is_downloaded(self) -> bool:
@@ -479,32 +484,37 @@ class LlamaTranslator:
     # ---------- 自动下载 ----------
     def ensure_downloaded(self, progress=None) -> None:
         _ensure_stderr()
-        # 1) llama.cpp 官方预编译运行时（Windows CPU x64）
+        # 1) llama.cpp 官方预编译运行时（Windows .zip / macOS .tar.gz）
         if self._server_exe() is None:
             release = str(self.cfg.get("llama_release", "b10686"))
-            zip_name = self._runtime_zip_name(release)
-            if not zip_name:
+            archive_name = self._runtime_archive_name(release)
+            if not archive_name:
                 raise RuntimeError(
                     f"当前系统（{sys.platform}）暂不提供 llama.cpp 自动下载，"
                     "请使用 API 模式或在设置中手动配置本地 llama-server"
                 )
-            zip_path = os.path.join(self.runtime_dir, zip_name)
-            url = f"https://github.com/ggml-org/llama.cpp/releases/download/{release}/{zip_name}"
+            archive_path = os.path.join(self.runtime_dir, archive_name)
+            url = f"https://github.com/ggml-org/llama.cpp/releases/download/{release}/{archive_name}"
             os.makedirs(self.runtime_dir, exist_ok=True)
-            if not os.path.isfile(zip_path):
-                bundled = self._bundled_zip(zip_name)
+            if not os.path.isfile(archive_path):
+                bundled = self._bundled_archive(archive_name)
                 if bundled:
                     if progress:
                         progress("正在从安装包复制 llama.cpp 运行时…")
-                    shutil.copy2(bundled, zip_path)
+                    shutil.copy2(bundled, archive_path)
                 else:
                     if progress:
                         progress(f"正在下载 llama.cpp 运行时（{release}，约 17 MB）…")
-                    self._download(url, zip_path, progress)
+                    try:
+                        self._download(url, archive_path, progress)
+                    except urllib.error.HTTPError as exc:
+                        raise RuntimeError(
+                            f"下载 llama.cpp 运行时失败（HTTP {exc.code}）：{url}\n"
+                            "请检查网络，或在设置中把 llama_release 改成有效的版本号"
+                        ) from exc
             if progress:
                 progress("正在解压 llama.cpp 运行时…")
-            with zipfile.ZipFile(zip_path) as zf:
-                zf.extractall(self.runtime_dir)
+            self._extract_archive(archive_path, self.runtime_dir)
             if self._server_exe() is None:
                 raise RuntimeError(
                     f"解压后未找到 {self._server_exe_name()}，请检查 llama_release 配置"
@@ -563,19 +573,38 @@ class LlamaTranslator:
         if progress:
             progress("模型文件就绪")
 
-    def _bundled_zip(self, zip_name):
-        """查找打包进 exe 的运行时压缩包路径（兼容 onefile / onedir 布局）。"""
+    def _bundled_archive(self, archive_name):
+        """查找打包进 exe 的运行时归档路径（兼容 onefile / onedir 布局）。"""
         meipass = getattr(sys, "_MEIPASS", "") or ""
         candidates = [
-            os.path.join(meipass, "runtime", "llama.cpp", zip_name),
-            os.path.join(meipass, zip_name),
-            os.path.join(PROJECT_ROOT, "runtime", "llama.cpp", zip_name),
-            os.path.join(PROJECT_ROOT, "_internal", "runtime", "llama.cpp", zip_name),
+            os.path.join(meipass, "runtime", "llama.cpp", archive_name),
+            os.path.join(meipass, archive_name),
+            os.path.join(PROJECT_ROOT, "runtime", "llama.cpp", archive_name),
+            os.path.join(PROJECT_ROOT, "_internal", "runtime", "llama.cpp", archive_name),
         ]
         for candidate in candidates:
             if os.path.isfile(candidate):
                 return candidate
         return None
+
+    @staticmethod
+    def _extract_archive(archive_path, dest_dir) -> None:
+        """按扩展名解压运行时归档（.zip 或 .tar.gz）。"""
+        if archive_path.endswith(".zip"):
+            with zipfile.ZipFile(archive_path) as zf:
+                zf.extractall(dest_dir)
+            return
+        with tarfile.open(archive_path) as tf:
+            try:
+                tf.extractall(dest_dir, filter="data")  # Python >= 3.12 官方安全过滤器
+            except TypeError:
+                # 老版本 Python 无 filter 参数：先拒绝路径穿越再解压
+                base = os.path.normpath(dest_dir)
+                for member in tf.getmembers():
+                    target = os.path.normpath(os.path.join(base, member.name))
+                    if not target.startswith(base + os.sep) and target != base:
+                        raise RuntimeError(f"运行时归档包含不安全路径：{member.name}")
+                tf.extractall(dest_dir)
 
     def _download(self, url, dest, progress, label="文件") -> None:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
