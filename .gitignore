@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 虚拟环境
+.venv/
+venv/
+
+# PyInstaller 打包产物
+build/
+dist/
+*.spec
+
+# 模型与 llama.cpp 运行时（体积大，首次启动时自动下载）
+models/
+runtime/
+
+# 本地数据：用户设置、术语表、短语、日志，不应随仓库分发
+setting.json
+glossary.json
+phrases.json
+*.log
+
+# macOS
+.DS_Store
