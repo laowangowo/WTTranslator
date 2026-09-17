@@ -4,7 +4,9 @@ import os
 
 from .config import PROJECT_ROOT
 
-_DEFAULT_VERSION = "1.2.0"
+# 源码运行（无 config.yml，config.yml 只随安装包发布）时的版本号；
+# 发版时需同步修改此处，否则会一直提示更新。
+_DEFAULT_VERSION = "1.3.4"
 
 
 def _load_version() -> str:
