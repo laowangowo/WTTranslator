@@ -873,51 +873,75 @@ class OverlayWindow:
         bar.pack(fill="x", pady=(0, 12))
         self._styled_button(bar, "检查更新", self._check_update_manual).pack(side="right", padx=(0, 8))
         self._styled_button(bar, "关闭", top.destroy).pack(side="right", padx=(0, 8))
+        self._show_dialog(top)
 
     # ---------- 更新检查 ----------
     def _make_dialog(self, title, width=420, height=300):
-        """创建与主界面同风格的无边框对话框，返回 (top, body_frame)。"""
+        """创建与主界面同风格的无边框对话框，返回 (top, body_frame)。
+
+        窗口先 withdraw，调用方把内容填完之后再调 _show_dialog(top) 显示。
+        这样即使中途异常，也不会把一个没建完的空窗口留在屏幕上：没设过
+        geometry 的 Toplevel 是 200x200 的纯色方块，而且没人会去销毁它。
+        """
         family = self.cfg.get("font_family", "Microsoft YaHei UI")
         top = tk.Toplevel(self.root)
-        top.title(title)
-        top.configure(bg=BG)
-        top.resizable(False, False)
-        top.attributes("-topmost", True)
-        top.overrideredirect(True)  # 隐藏系统标题栏，与主界面一致
-        # 默认居中显示，避免首次创建时出现在屏幕左上角而被任务栏/其它窗口遮住
         try:
-            screen_w = top.winfo_screenwidth()
-            screen_h = top.winfo_screenheight()
-            x = max(0, (screen_w - width) // 2)
-            y = max(0, (screen_h - height) // 3)
-            top.geometry(f"{width}x{height}+{x}+{y}")
-        except tk.TclError:
-            top.geometry(f"{width}x{height}")
-        header = tk.Frame(top, bg=HEADER_BG, height=34, cursor="fleur")
-        header.pack(fill="x")
-        header.pack_propagate(False)
-
-        def _on_press(event):
-            top._drag_dx = event.x_root - top.winfo_x()
-            top._drag_dy = event.y_root - top.winfo_y()
-
-        def _on_motion(event):
+            top.withdraw()
+            top.title(title)
+            top.configure(bg=BG)
+            top.resizable(False, False)
+            top.attributes("-topmost", True)
+            top.overrideredirect(True)  # 隐藏系统标题栏，与主界面一致
+            # 默认居中显示，避免首次创建时出现在屏幕左上角而被任务栏/其它窗口遮住
             try:
-                top.geometry(f"+{event.x_root - top._drag_dx}+{event.y_root - top._drag_dy}")
+                screen_w = top.winfo_screenwidth()
+                screen_h = top.winfo_screenheight()
+                x = max(0, (screen_w - width) // 2)
+                y = max(0, (screen_h - height) // 3)
+                top.geometry(f"{width}x{height}+{x}+{y}")
+            except tk.TclError:
+                top.geometry(f"{width}x{height}")
+            header = tk.Frame(top, bg=HEADER_BG, height=34, cursor="fleur")
+            header.pack(fill="x")
+            header.pack_propagate(False)
+
+            def _on_press(event):
+                top._drag_dx = event.x_root - top.winfo_x()
+                top._drag_dy = event.y_root - top.winfo_y()
+
+            def _on_motion(event):
+                try:
+                    top.geometry(f"+{event.x_root - top._drag_dx}+{event.y_root - top._drag_dy}")
+                except tk.TclError:
+                    pass
+
+            header.bind("<Button-1>", _on_press, add="+")
+            header.bind("<B1-Motion>", _on_motion, add="+")
+            tk.Label(
+                header, text=title, bg=HEADER_BG, fg=FG, font=(family, 12, "bold"),
+            ).pack(side="left", padx=12)
+            _HeaderButton(header, "✕", lambda: self._destroy_dialog(top), self._font(9)).pack(side="right", padx=(0, 8))
+            body = tk.Frame(top, bg=BG)
+            body.pack(fill="both", expand=True)
+        except Exception:
+            self.log.exception("创建对话框失败，已销毁窗口：%s", title)
+            try:
+                top.destroy()
             except tk.TclError:
                 pass
-
-        header.bind("<Button-1>", _on_press, add="+")
-        header.bind("<B1-Motion>", _on_motion, add="+")
-        tk.Label(
-            header, text=title, bg=HEADER_BG, fg=FG, font=(family, 12, "bold"),
-        ).pack(side="left", padx=12)
-        _HeaderButton(header, "✕", lambda: self._destroy_dialog(top), self._font(9)).pack(side="right", padx=(0, 8))
-        body = tk.Frame(top, bg=BG)
-        body.pack(fill="both", expand=True)
-        top.lift()
-        top.focus_force()
+            raise
         return top, body
+
+    @staticmethod
+    def _show_dialog(top):
+        """内容全部填完之后再显示对话框（建好之前窗口一直处于 withdraw）。"""
+        try:
+            top.attributes("-topmost", True)
+            top.deiconify()
+            top.lift()
+            top.focus_force()
+        except tk.TclError:
+            pass
 
     def _styled_button(self, parent, text, command, primary=False):
         family = self.cfg.get("font_family", "Microsoft YaHei UI")
@@ -943,6 +967,7 @@ class OverlayWindow:
         bar.pack(side="bottom", fill="x", pady=(0, 12))
         self._styled_button(bar, "确定", top.destroy, primary=True).pack(side="right", padx=(0, 12))
         self._dialog_label(body, message).pack(fill="both", expand=True, padx=18, pady=(16, 6))
+        self._show_dialog(top)
 
     def _show_confirm_dialog(self, title, message, on_yes):
         top, body = self._make_dialog(title, 420, 230)
@@ -953,6 +978,7 @@ class OverlayWindow:
             bar, "是", lambda: (top.destroy(), on_yes()), primary=True
         ).pack(side="right", padx=(0, 8))
         self._dialog_label(body, message).pack(fill="both", expand=True, padx=18, pady=(16, 6))
+        self._show_dialog(top)
 
     def _check_update_manual(self):
         self.update_status("正在检查更新…")
@@ -1015,6 +1041,7 @@ class OverlayWindow:
         text.insert("1.0", changelog)
         text.configure(state="disabled")
         text.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        self._show_dialog(top)
 
     def _skip_update_version(self, info, dialog):
         version = str(info.get("version", "") or "").strip()
@@ -1113,6 +1140,7 @@ class OverlayWindow:
             bar, "确定", lambda: self._confirm_guardian(top, var_guard.get(), var_auto.get()),
             primary=True,
         ).pack(side="right", padx=(0, 8))
+        self._show_dialog(top)
 
     def _confirm_guardian(self, dialog, enabled, autostart):
         dialog.destroy()
@@ -1690,8 +1718,8 @@ class OverlayWindow:
             ),
             primary=True,
         ).pack(side="right", padx=(0, 8))
-        # 内容全部构建完成后再次确保窗口在最前且已映射，避免首次打开时未成功上屏
-        top.after_idle(lambda: (top.lift(), top.attributes("-topmost", True), top.focus_force(), top.deiconify()))
+        # 内容全部构建完成后再显示（_make_dialog 里窗口一直是 withdraw 的）
+        self._show_dialog(top)
 
     def _save_settings(
         self, dialog,
