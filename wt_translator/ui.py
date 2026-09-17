@@ -2425,6 +2425,9 @@ class OverlayWindow:
                             int(timeout * 1000), self._hide_quick_menu
                         )
                     return
+                # 窗口没起来（首帧绘制失败 / 启动超时）：显式收尾。
+                # 否则后台线程建出来的窗口没人销毁，会变成永不消失的黑框
+                native.hide()
             except Exception as exc:
                 self.log.warning("原生快捷菜单创建失败，改用 Tk 浮层：%s", exc)
         top = tk.Toplevel(self.root)
