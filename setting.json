@@ -1,0 +1,17 @@
+{
+  "poll_interval": 0.5,
+  "window_width": 260,
+  "window_height": 120,
+  "window_x": 38,
+  "window_y": 113,
+  "opacity": 0.8,
+  "blacklist": [
+    "^空袭警报.*",
+    "^请注意当前识别区域.*",
+    "^进攻.*",
+    "^防守.*",
+    "^空袭警报.*"
+  ],
+  "show_sender": true,
+  "show_original": true
+}
