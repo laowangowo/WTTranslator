@@ -117,6 +117,8 @@ if _user32 is not None:
     _user32.SetTimer.argtypes = [H, ctypes.c_size_t, wintypes.UINT, H]
     _user32.KillTimer.argtypes = [H, ctypes.c_size_t]
     _user32.DestroyWindow.argtypes = [H]
+    _user32.IsWindow.restype = wintypes.BOOL
+    _user32.IsWindow.argtypes = [H]
     _user32.GetDC.restype = ctypes.c_void_p
     _user32.GetDC.argtypes = [H]
     _user32.ReleaseDC.argtypes = [H, H]
@@ -238,6 +240,7 @@ class NativeQuickMenu:
         self._geometry_info = None
         self._thread = None
         self._ready = threading.Event()
+        self._cancelled = False   # hide() 置位：让还在启动中的窗口线程放弃建窗
         self.last_render = None  # (bg_pixels, text_pixels, bg_alpha)
 
     @property
@@ -273,10 +276,19 @@ class NativeQuickMenu:
         return self.hwnd_handle is not None
 
     def hide(self):
-        if self.hwnd_handle:
-            _user32.PostMessageW(self.hwnd_handle, WM_CLOSE, 0, 0)
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
+        # 置位后，仍在启动流程里的窗口线程会在建窗/进消息循环前放弃，
+        # 堵住「show() 超时返回 False、线程随后还是建出孤儿窗口」这条竞态
+        self._cancelled = True
+        hwnd = self.hwnd_handle
+        if hwnd:
+            _user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=1.0)
+            if thread.is_alive() and self.log:
+                # 窗口线程还卡在消息循环里。销毁由它自己的 finally 兜底，
+                # 那里用的是局部 hwnd，不依赖这个会被置空的属性
+                self.log.warning("快捷菜单窗口线程未在 1 秒内退出，等其自行销毁")
         self._thread = None
         self.hwnd_handle = None
 
@@ -294,6 +306,9 @@ class NativeQuickMenu:
         return x, y, width, height
 
     def _run(self):
+        # 销毁一律依赖这个局部变量：hide() 会从别的线程把 self.hwnd_handle
+        # 置空，只看属性的话 join 超时时兜底销毁会被跳过，窗口就永远留下了
+        hwnd = None
         try:
             _ensure_class()
             instance = _kernel32.GetModuleHandleW(None)
@@ -303,19 +318,29 @@ class NativeQuickMenu:
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT
                 | WS_EX_LAYERED | WS_EX_NOACTIVATE
             )
-            self.hwnd_handle = _user32.CreateWindowExW(
+            hwnd = _user32.CreateWindowExW(
                 ex_style, CLASS_NAME, "WT Quick Reply", WS_POPUP,
                 x, y, width, height, None, None, instance, None,
             )
-            if not self.hwnd_handle:
+            if not hwnd:
                 return
+            self.hwnd_handle = hwnd
             with _WINDOWS_LOCK:
-                _WINDOWS[self.hwnd_handle] = self
+                _WINDOWS[hwnd] = self
+            # 先画出来，画成功了才显示。WS_EX_LAYERED 窗口在成功调用
+            # UpdateLayeredWindow 之前会被系统填成纯黑，显示出来就是黑框
+            if not self._render():
+                if self.log:
+                    self.log.warning("快捷菜单首帧绘制失败，放弃显示")
+                return
+            if self._cancelled:
+                return
+            _user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
             self._render()
-            _user32.ShowWindow(self.hwnd_handle, SW_SHOWNOACTIVATE)
-            self._render()
-            _user32.SetTimer(self.hwnd_handle, 1, 80, None)
+            _user32.SetTimer(hwnd, 1, 80, None)
             self._ready.set()
+            if self._cancelled:
+                return
             msg = _MSG()
             while _user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 _user32.TranslateMessage(ctypes.byref(msg))
@@ -324,15 +349,18 @@ class NativeQuickMenu:
             if self.log:
                 self.log.warning("快捷菜单原生窗口创建失败：%s\n%s", exc, traceback.format_exc())
         finally:
-            self._ready.set()
             with _WINDOWS_LOCK:
-                _WINDOWS.pop(self.hwnd_handle, None)
-            if self.hwnd_handle:
+                _WINDOWS.pop(hwnd, None)
+            if hwnd:
                 try:
-                    _user32.DestroyWindow(self.hwnd_handle)
+                    if _user32.IsWindow(hwnd):
+                        _user32.DestroyWindow(hwnd)
                 except Exception:
                     pass
+            # 先清属性再放行 _ready：否则 show() 可能在窗口已销毁后
+            # 仍读到非空的 hwnd_handle，误判为创建成功
             self.hwnd_handle = None
+            self._ready.set()
 
     def _handle(self, hwnd, msg, wparam, lparam):
         try:
@@ -353,27 +381,37 @@ class NativeQuickMenu:
         return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
     def _render(self):
+        """绘制一次，返回是否成功。
+
+        所有 GDI 资源都在 try 内部获取、finally 里逐一判空释放，
+        任何提前 return 都不会漏掉释放（以前 GetDC/CreateCompatibleDC/
+        CreateDIBSection 只在 finally 释放，而提前 return 在 try 之前）。
+        """
         if not self.hwnd_handle or not self._geometry_info:
-            return
+            return False
         x, y, width, height = self._geometry_info
-        screen_dc = _user32.GetDC(None)
-        mem_dc = _gdi32.CreateCompatibleDC(screen_dc)
-        info = _BITMAPINFOHEADER()
-        info.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
-        info.biWidth = width
-        info.biHeight = -height  # 自上而下
-        info.biPlanes = 1
-        info.biBitCount = 32
-        info.biCompression = 0
-        bits = ctypes.c_void_p()
-        bitmap = _gdi32.CreateDIBSection(
-            screen_dc, ctypes.byref(info), DIB_RGB_COLORS,
-            ctypes.byref(bits), None, 0,
-        )
-        if not mem_dc or not bitmap or not bits:
-            return
-        old_bitmap = _gdi32.SelectObject(mem_dc, bitmap)
+        screen_dc = None
+        mem_dc = None
+        bitmap = None
+        old_bitmap = None
         try:
+            screen_dc = _user32.GetDC(None)
+            mem_dc = _gdi32.CreateCompatibleDC(screen_dc)
+            info = _BITMAPINFOHEADER()
+            info.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+            info.biWidth = width
+            info.biHeight = -height  # 自上而下
+            info.biPlanes = 1
+            info.biBitCount = 32
+            info.biCompression = 0
+            bits = ctypes.c_void_p()
+            bitmap = _gdi32.CreateDIBSection(
+                screen_dc, ctypes.byref(info), DIB_RGB_COLORS,
+                ctypes.byref(bits), None, 0,
+            )
+            if not screen_dc or not mem_dc or not bitmap or not bits:
+                return False
+            old_bitmap = _gdi32.SelectObject(mem_dc, bitmap)
             rect = _RECT(0, 0, width, height)
             brush = _gdi32.CreateSolidBrush(self.bg_color)
             _user32.FillRect(mem_dc, ctypes.byref(rect), brush)
@@ -441,12 +479,17 @@ class NativeQuickMenu:
             size = _SIZE(width, height)
             dst = _POINT(x, y)
             blend = _BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
-            _user32.UpdateLayeredWindow(
+            result = _user32.UpdateLayeredWindow(
                 self.hwnd_handle, screen_dc, ctypes.byref(dst), ctypes.byref(size),
                 mem_dc, ctypes.byref(src), 0, ctypes.byref(blend), ULW_ALPHA,
             )
+            return bool(result)
         finally:
-            _gdi32.SelectObject(mem_dc, old_bitmap)
-            _gdi32.DeleteObject(bitmap)
-            _gdi32.DeleteDC(mem_dc)
-            _user32.ReleaseDC(None, screen_dc)
+            if mem_dc and old_bitmap:
+                _gdi32.SelectObject(mem_dc, old_bitmap)
+            if bitmap:
+                _gdi32.DeleteObject(bitmap)
+            if mem_dc:
+                _gdi32.DeleteDC(mem_dc)
+            if screen_dc:
+                _user32.ReleaseDC(None, screen_dc)
