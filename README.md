@@ -1,6 +1,6 @@
 # WTTranslator
 基于8111接口的战争雷霆翻译器  
-[官网](https://wt.ngup.eu.org/) | [QQ群:1108421163](https://qun.qq.com/universal-share/share?ac=1&authKey=uqp4DUkAT6RjSS7xEnoQ3jtAg8olH5FU%2BkSoNddr%2FShzwclICACwUU6WZWdX%2F6AJ&busi_data=eyJncm91cENvZGUiOiIxMTA4NDIxMTYzIiwidG9rZW4iOiJQRjdLY2RWSW82OE9NL3dEWVNNYlpNY0YvWHU4SDJ2U3Z0WlJtc1hrQzMrVkpuZUpReUZTQUVncWZNdDRrdWExIiwidWluIjoiNjQ5ODE1MjM1In0%3D&data=vIjuCpO9sAIaKgQRIg7UN8G0odBAO3aeYHIk52gcngS7gzCYwCsWSxtv4EOoEVx05vbjZsiuNYBKqGuJBDMsZw&svctype=4&tempid=h5_group_info) | [Microsoft Store](?仍在审核)
+[官网](https://wt.ngup.eu.org/) | [QQ群:1108421163](https://qun.qq.com/universal-share/share?ac=1&authKey=uqp4DUkAT6RjSS7xEnoQ3jtAg8olH5FU%2BkSoNddr%2FShzwclICACwUU6WZWdX%2F6AJ&busi_data=eyJncm91cENvZGUiOiIxMTA4NDIxMTYzIiwidG9rZW4iOiJQRjdLY2RWSW82OE9NL3dEWVNNYlpNY0YvWHU4SDJ2U3Z0WlJtc1hrQzMrVkpuZUpReUZTQUVncWZNdDRrdWExIiwidWluIjoiNjQ5ODE1MjM1In0%3D&data=vIjuCpO9sAIaKgQRIg7UN8G0odBAO3aeYHIk52gcngS7gzCYwCsWSxtv4EOoEVx05vbjZsiuNYBKqGuJBDMsZw&svctype=4&tempid=h5_group_info) | [Microsoft Store](https://apps.microsoft.com/detail/9P4N6D4SR5D4)
 > [!IMPORTANT]
 > 注意：本人不保证使用翻译器绝对不会导致封号，亦不对您因使用翻译器所产生的一切不良后果承担任何责任。
 ## 功能
